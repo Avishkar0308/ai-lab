@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Object Detector – runs in your browser</title>
+<style>
+  :root{--bg:#0b0f1a;--card:#141b2d;--text:#e8ecf5;--muted:#8b95b0;--acc:#6ee7b7;--acc2:#818cf8}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+  h1{margin:0 0 4px;font-size:1.8rem;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  p.sub{margin:0 0 20px;color:var(--muted)}
+  #drop{border:2px dashed #2a3350;border-radius:14px;padding:28px 16px;text-align:center;background:var(--card);cursor:pointer;transition:.2s}
+  #drop.over,#drop:hover{border-color:var(--acc)}
+  #drop b{color:var(--acc)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+  button{background:var(--card);color:var(--text);border:1px solid #2a3350;border-radius:10px;padding:10px 16px;font-size:.95rem;cursor:pointer}
+  button:hover{border-color:var(--acc)}
+  #status{margin:12px 0;color:var(--muted);font-size:.95rem}
+  .stage{position:relative;display:none;background:#000;border-radius:14px;overflow:hidden;line-height:0}
+  .stage.show{display:block}
+  .stage img,.stage video{width:100%;height:auto;display:block}
+  .stage canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+  #list{margin-top:12px;display:flex;flex-wrap:wrap;gap:8px}
+  .chip{background:var(--card);border:1px solid #2a3350;border-radius:999px;padding:6px 12px;font-size:.9rem}
+  .chip b{color:var(--acc)}
+  footer{margin-top:24px;color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Object Detector</h1>
+  <p class="sub">A real neural network (COCO-SSD) running in your browser. Your photos never leave your device.</p>
+
+  <div id="drop">📁 <b>Click to choose a photo</b> or drag &amp; drop one here<br><small style="color:var(--muted)">Try photos with people, phones, cups, cars, pets, laptops…</small></div>
+  <input id="file" type="file" accept="image/*" hidden>
+
+  <div class="row">
+    <button id="camBtn">📷 Try live camera (optional)</button>
+    <button id="stopBtn" style="display:none">⏹ Stop camera</button>
+  </div>
+
+  <div id="status">Loading AI model…</div>
+
+  <div class="stage" id="stage">
+    <img id="img" alt="">
+    <video id="video" autoplay playsinline muted style="display:none"></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="list"></div>
+
+  <footer>Built with TensorFlow.js · COCO-SSD (detects 80 object types)</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
+<script>
+const $ = id => document.getElementById(id);
+const img = $('img'), video = $('video'), canvas = $('overlay'), ctx = canvas.getContext('2d');
+let model = null, camOn = false, stream = null;
+
+function setStatus(t){ $('status').textContent = t; }
+
+(async () => {
+  try{
+    model = await cocoSsd.load();
+    setStatus('Model ready. Upload a photo to detect objects.');
+  }catch(e){
+    setStatus('Could not load the AI model. Check your internet connection and refresh. (' + e.message + ')');
+  }
+})();
+
+function draw(preds, w, h){
+  canvas.width = w; canvas.height = h;
+  ctx.clearRect(0, 0, w, h);
+  const s = Math.max(2, w / 300);
+  ctx.lineWidth = s; ctx.font = (s * 6) + 'px system-ui';
+  preds.forEach(p => {
+    const [x, y, bw, bh] = p.bbox;
+    const label = p.class + ' ' + Math.round(p.score * 100) + '%';
+    const th = s * 8, tw = ctx.measureText(label).width + s * 4;
+    ctx.strokeStyle = '#6ee7b7'; ctx.strokeRect(x, y, bw, bh);
+    ctx.fillStyle = '#6ee7b7'; ctx.fillRect(x, Math.max(0, y - th), tw, th);
+    ctx.fillStyle = '#04210f'; ctx.fillText(label, x + s * 2, Math.max(th * 0.75, y - th * 0.25));
+  });
+}
+
+function summarize(preds){
+  const counts = {};
+  preds.forEach(p => counts[p.class] = (counts[p.class] || 0) + 1);
+  $('list').innerHTML = Object.entries(counts).map(([k, v]) => `<span class="chip"><b>${v}×</b> ${k}</span>`).join('');
+}
+
+async function handleFile(f){
+  if (!f || !f.type.startsWith('image/')) return setStatus('Please choose an image file.');
+  if (!model) return setStatus('Model is still loading, try again in a moment.');
+  stopCam();
+  setStatus('Detecting…');
+  const url = URL.createObjectURL(f);
+  img.onload = async () => {
+    video.style.display = 'none'; img.style.display = 'block';
+    $('stage').classList.add('show');
+    const preds = await model.detect(img);
+    draw(preds, img.naturalWidth, img.naturalHeight);
+    summarize(preds);
+    setStatus(preds.length ? `Found ${preds.length} object(s).` : 'No known objects found. Try another photo.');
+  };
+  img.src = url;
+}
+
+$('drop').onclick = () => $('file').click();
+$('file').onchange = e => handleFile(e.target.files[0]);
+['dragover', 'dragenter'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
+$('drop').addEventListener('drop', e => handleFile(e.dataTransfer.files[0]));
+
+/* Optional live camera */
+$('camBtn').onclick = async () => {
+  if (!model) return setStatus('Model is still loading, try again in a moment.');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+    return setStatus('Camera is not available here (needs HTTPS and a supported browser). Photo upload works everywhere.');
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
+    img.style.display = 'none'; video.style.display = 'block';
+    $('stage').classList.add('show');
+    camOn = true; $('stopBtn').style.display = ''; $('camBtn').style.display = 'none';
+    setStatus('Camera live.');
+    liveLoop();
+  }catch(e){
+    setStatus('Camera blocked or unavailable (' + e.name + '). No problem, just upload a photo instead.');
+  }
+};
+function stopCam(){
+  camOn = false;
+  if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  $('stopBtn').style.display = 'none'; $('camBtn').style.display = '';
+}
+$('stopBtn').onclick = () => { stopCam(); ctx.clearRect(0, 0, canvas.width, canvas.height); setStatus('Camera stopped.'); };
+async function liveLoop(){
+  if (!camOn) return;
+  const preds = await model.detect(video);
+  draw(preds, video.videoWidth, video.videoHeight);
+  summarize(preds);
+  requestAnimationFrame(liveLoop);
+}
+</script>
+</body>
+</html>
